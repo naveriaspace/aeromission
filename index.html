@@ -693,16 +693,15 @@ function App() {
   // Load config from localStorage
   // Hardcoded credentials — do not expose settings UI to users
   const CLIENT_ID = '732243213522-mchnbdj1r8ofnml8isaklrjqov94f3lu.apps.googleusercontent.com';
-  const API_KEY = ''; // Set this once: your Google API Key
-  const MASTER_FILE_ID = ''; // Set this once: your Drive file ID
+  const FOLDER_NAME = 'Gantt';
+  const MASTER_FILE_NAME = 'missions.json';
 
-  const [config] = React.useState(() => {
-    // Allow masterFileId to be persisted in localStorage after first creation
-    try {
-      const s = localStorage.getItem('gantt_master_file_id');
-      return { clientId: CLIENT_ID, apiKey: API_KEY, masterFileId: s || MASTER_FILE_ID || null };
-    } catch { return { clientId: CLIENT_ID, apiKey: API_KEY, masterFileId: MASTER_FILE_ID || null }; }
+  const [config] = React.useState({
+    clientId: CLIENT_ID,
+    folderId: null,
+    masterFileId: null,
   });
+  const driveRef = React.useRef({ folderId: null, masterFileId: null });
 
   // GAPI / GIS init
   React.useEffect(() => {
@@ -729,7 +728,6 @@ function App() {
           window.gapi.load('client', async () => {
             try {
               await window.gapi.client.init({
-                apiKey: config.apiKey || undefined,
                 discoveryDocs: [
                   'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
                   'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
@@ -745,90 +743,160 @@ function App() {
           client_id: config.clientId,
           scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events',
           callback: async (resp) => {
-            if (resp.error) { toast('Auth error: ' + resp.error, 'error'); return; }
+            if (resp.error) {
+              // Silent re-auth failed quietly — user can click sign-in manually
+              if (resp.error === 'interaction_required' || resp.error === 'access_denied') return;
+              toast('Auth error: ' + resp.error, 'error');
+              return;
+            }
             setIsSignedIn(true);
+            // Store hint for next silent attempt
+            const hint = localStorage.getItem('gantt_user_hint');
+            if (!hint) {
+              // We'll get email from Drive userinfo after load
+            }
+            // Schedule silent token refresh 55 min from now
+            setTimeout(() => {
+              if (window._tokenClient) window._tokenClient.requestAccessToken({ prompt: '' });
+            }, 55 * 60 * 1000);
             await loadDriveData();
             await loadCalendarEvents();
           },
         });
+
+        // Attempt silent sign-in on page load (no popup shown)
+        const savedHint = localStorage.getItem('gantt_user_hint');
+        window._tokenClient.requestAccessToken({
+          prompt: '',
+          ...(savedHint ? { login_hint: savedHint } : {}),
+        });
+
       } catch (e) {
         console.error('GAPI init error', e);
         toast('Google API init failed: ' + e.message, 'error');
       }
     })();
-  }, [gapiReady, gisReady, config.clientId, config.apiKey]);
+  }, [gapiReady, gisReady, config.clientId]);
+
+  // ── Drive helpers ────────────────────────────────────────────────────────────
+  async function findOrCreateFolder(name) {
+    // Check if folder already known
+    if (driveRef.current.folderId) return driveRef.current.folderId;
+    // Search for existing folder
+    const res = await window.gapi.client.drive.files.list({
+      q: `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: 'files(id,name)',
+      spaces: 'drive',
+    });
+    if (res.result.files && res.result.files.length > 0) {
+      const id = res.result.files[0].id;
+      driveRef.current.folderId = id;
+      return id;
+    }
+    // Create folder
+    const created = await window.gapi.client.drive.files.create({
+      resource: { name, mimeType: 'application/vnd.google-apps.folder' },
+      fields: 'id',
+    });
+    const id = created.result.id;
+    driveRef.current.folderId = id;
+    toast(`Created Drive folder: ${name}`, 'success');
+    return id;
+  }
+
+  async function findOrCreateFile(folderId, fileName) {
+    if (driveRef.current.masterFileId) return driveRef.current.masterFileId;
+    // Search in folder
+    const res = await window.gapi.client.drive.files.list({
+      q: `name='${fileName}' and '${folderId}' in parents and trashed=false`,
+      fields: 'files(id,name)',
+      spaces: 'drive',
+    });
+    if (res.result.files && res.result.files.length > 0) {
+      const id = res.result.files[0].id;
+      driveRef.current.masterFileId = id;
+      return id;
+    }
+    return null; // doesn't exist yet
+  }
+
+  async function uploadFileToDrive(fileId, folderId, fileName, data) {
+    const body = JSON.stringify(data, null, 2);
+    const boundary = '-------AeroMissionBoundary';
+    const metadata = fileId
+      ? { mimeType: 'application/json' }
+      : { name: fileName, mimeType: 'application/json', parents: [folderId] };
+    const multipart =
+      `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n` +
+      JSON.stringify(metadata) +
+      `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n` +
+      body +
+      `\r\n--${boundary}--`;
+    const path = fileId
+      ? `/upload/drive/v3/files/${fileId}`
+      : `/upload/drive/v3/files`;
+    const method = fileId ? 'PATCH' : 'POST';
+    const res = await window.gapi.client.request({
+      path, method,
+      params: { uploadType: 'multipart' },
+      headers: { 'Content-Type': `multipart/related; boundary="${boundary}"` },
+      body: multipart,
+    });
+    return res.result.id || fileId;
+  }
 
   // ── Drive data ──────────────────────────────────────────────────────────────
   async function loadDriveData() {
-    if (!config.masterFileId) {
-      const seed = makeSeedData();
-      setData(seed);
-      setActiveMissionId(seed.missions[0]?.id || null);
-      return;
-    }
     setSyncStatus('syncing');
     try {
+      const folderId = await findOrCreateFolder(FOLDER_NAME);
+      const fileId = await findOrCreateFile(folderId, MASTER_FILE_NAME);
+      if (!fileId) {
+        // No file yet — start empty, created on first save
+        const empty = { version: 1, lastSaved: new Date().toISOString(), missions: [], calendarEvents: [] };
+        setData(empty);
+        setActiveMissionId(null);
+        setSyncStatus('synced');
+        toast('New workspace ready — add your first mission', 'success');
+        return;
+      }
       const res = await window.gapi.client.drive.files.get({
-        fileId: config.masterFileId, alt: 'media',
+        fileId, alt: 'media',
       });
       const parsed = typeof res.body === 'string' ? JSON.parse(res.body) : res.result;
       setData(parsed);
       setActiveMissionId(parsed.missions[0]?.id || null);
       setSyncStatus('synced');
-      toast('Data loaded from Drive ✓', 'success');
+      toast('Loaded from Drive/Gantt/missions.json ✓', 'success');
     } catch (e) {
-      if (e.status === 403 || e.status === 404) {
-        toast('Access denied to Drive file', 'error');
+      console.error('Drive load error', e);
+      if (e.status === 403) {
+        toast('Access denied — you may not have permission to this Drive folder', 'error');
         setSyncStatus('offline');
       } else {
-        const seed = makeSeedData();
-        setData(seed);
-        setActiveMissionId(seed.missions[0]?.id || null);
-        toast('Could not load Drive file, using local data', 'error');
+        toast('Drive load failed: ' + (e.message || e.status), 'error');
         setSyncStatus('offline');
       }
     }
   }
 
   async function saveToDrive(newData) {
-    if (!isSignedIn) {
-      setData(newData);
-      return;
-    }
+    if (!isSignedIn) { setData(newData); return; }
     setSyncStatus('syncing');
-    const body = JSON.stringify({ ...newData, lastSaved: new Date().toISOString() });
+    const savePayload = { ...newData, lastSaved: new Date().toISOString() };
     try {
-      if (config.masterFileId) {
-        const boundary = '-------314159265358979323846';
-        const multipart = `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ mimeType: 'application/json' })}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${boundary}--`;
-        await window.gapi.client.request({
-          path: `/upload/drive/v3/files/${config.masterFileId}`,
-          method: 'PATCH',
-          params: { uploadType: 'multipart' },
-          headers: { 'Content-Type': `multipart/related; boundary="${boundary}"` },
-          body: multipart,
-        });
-      } else {
-        const res = await window.gapi.client.drive.files.create({
-          resource: { name: 'AeroMission_Data.json', mimeType: 'application/json' },
-          fields: 'id',
-        });
-        const fileId = res.result.id;
-        localStorage.setItem('gantt_master_file_id', fileId);
-        await window.gapi.client.request({
-          path: `/upload/drive/v3/files/${fileId}`,
-          method: 'PATCH',
-          params: { uploadType: 'multipart' },
-          headers: { 'Content-Type': `multipart/related; boundary="-------314159265358979323846"` },
-          body: `\r\n-------314159265358979323846\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ mimeType: 'application/json' })}\r\n-------314159265358979323846\r\nContent-Type: application/json\r\n\r\n${body}\r\n-------314159265358979323846--`,
-        });
-        toast(`Drive file created (ID: ${fileId})`, 'success');
+      const folderId = await findOrCreateFolder(FOLDER_NAME);
+      let fileId = driveRef.current.masterFileId;
+      if (!fileId) {
+        fileId = await findOrCreateFile(folderId, MASTER_FILE_NAME);
       }
-      setData({ ...newData, lastSaved: new Date().toISOString() });
+      const newFileId = await uploadFileToDrive(fileId, folderId, MASTER_FILE_NAME, savePayload);
+      driveRef.current.masterFileId = newFileId;
+      setData(savePayload);
       setSyncStatus('synced');
     } catch (e) {
       console.error('Save error', e);
-      toast('Save failed', 'error');
+      toast('Save failed: ' + (e.message || e.status), 'error');
       setSyncStatus('offline');
       setData(newData);
     }

@@ -14,63 +14,6 @@ function missionColor(idx) {
   return PHASE_COLORS[idx % PHASE_COLORS.length];
 }
 
-// ─── Default seed data ──────────────────────────────────────────────────────
-function makeSeedData() {
-  const now = new Date('2026-05-01');
-  const d = (offset) => {
-    const dt = new Date(now);
-    dt.setDate(dt.getDate() + offset);
-    return dt.toISOString().slice(0, 10);
-  };
-  return {
-    version: 1,
-    lastSaved: now.toISOString(),
-    missions: [
-      {
-        id: 'm1', name: 'HAWK-7 UAV Campaign', color: '#0ea5e9',
-        status: 'Active', description: 'Long-endurance MALE UAV field campaign',
-        startDate: d(0), endDate: d(120),
-        tasks: [
-          { id: 't1', name: 'Requirements Freeze', type: 'milestone', start: d(0), end: d(0), progress: 100, deps: [], critical: true, assignee: 'Eng Team', calendarEventId: null },
-          { id: 't2', name: 'Airframe Integration', type: 'task', start: d(2), end: d(28), progress: 60, deps: ['t1'], critical: true, assignee: 'Assembly', calendarEventId: null },
-          { id: 't3', name: 'Avionics Install', type: 'task', start: d(10), end: d(35), progress: 40, deps: ['t1'], critical: false, assignee: 'Avionics', calendarEventId: null },
-          { id: 't4', name: 'Ground Comms Test', type: 'task', start: d(36), end: d(50), progress: 0, deps: ['t2','t3'], critical: true, assignee: 'GCS Team', calendarEventId: null },
-          { id: 't5', name: 'EMC Clearance', type: 'task', start: d(36), end: d(45), progress: 0, deps: ['t3'], critical: false, assignee: 'Test Lab', calendarEventId: null },
-          { id: 't6', name: 'First Flight Readiness Review', type: 'milestone', start: d(52), end: d(52), progress: 0, deps: ['t4','t5'], critical: true, assignee: 'PM', calendarEventId: null },
-          { id: 't7', name: 'Flight Test Phase 1', type: 'task', start: d(55), end: d(90), progress: 0, deps: ['t6'], critical: true, assignee: 'Test Pilots', calendarEventId: null },
-          { id: 't8', name: 'Payload Integration', type: 'task', start: d(20), end: d(55), progress: 25, deps: ['t1'], critical: false, assignee: 'Payload', calendarEventId: null },
-          { id: 't9', name: 'Operational Handover', type: 'milestone', start: d(110), end: d(110), progress: 0, deps: ['t7','t8'], critical: true, assignee: 'Ops', calendarEventId: null },
-        ],
-        resources: [
-          { id: 'r1', name: 'Lead Engineer', type: 'person', availability: 100 },
-          { id: 'r2', name: 'Avionics Engineer', type: 'person', availability: 80 },
-          { id: 'r3', name: 'HAWK-7 Airframe', type: 'vehicle', availability: 100 },
-          { id: 'r4', name: 'Ground Control Station', type: 'equipment', availability: 100 },
-          { id: 'r5', name: 'Campaign Budget', type: 'budget', availability: 100, value: 4200000 },
-        ],
-      },
-      {
-        id: 'm2', name: 'SENTINEL-3 Surveillance', color: '#6366f1',
-        status: 'Planning', description: 'High-altitude ISR UAV deployment',
-        startDate: d(30), endDate: d(200),
-        tasks: [
-          { id: 't10', name: 'System Design Review', type: 'milestone', start: d(30), end: d(30), progress: 0, deps: [], critical: true, assignee: 'Systems', calendarEventId: null },
-          { id: 't11', name: 'Sensor Suite Procurement', type: 'task', start: d(31), end: d(75), progress: 0, deps: ['t10'], critical: false, assignee: 'Procurement', calendarEventId: null },
-          { id: 't12', name: 'Platform Modifications', type: 'task', start: d(40), end: d(100), progress: 0, deps: ['t10'], critical: true, assignee: 'Assembly', calendarEventId: null },
-          { id: 't13', name: 'Integration & Test', type: 'task', start: d(101), end: d(140), progress: 0, deps: ['t11','t12'], critical: true, assignee: 'I&T Team', calendarEventId: null },
-          { id: 't14', name: 'Acceptance Review', type: 'milestone', start: d(145), end: d(145), progress: 0, deps: ['t13'], critical: true, assignee: 'PM', calendarEventId: null },
-        ],
-        resources: [
-          { id: 'r6', name: 'Systems Engineer', type: 'person', availability: 100 },
-          { id: 'r7', name: 'SENTINEL Platform', type: 'vehicle', availability: 100 },
-          { id: 'r8', name: 'Sensor Budget', type: 'budget', availability: 100, value: 2800000 },
-        ],
-      },
-    ],
-    calendarEvents: [],
-  };
-}
-
 // ─── MissionSidebar component ───────────────────────────────────────────────
 function MissionSidebar({ missions, activeMissionId, onSelect, onAdd, onDelete, collapsed, onToggle }) {
   return (
@@ -152,6 +95,6 @@ function NewMissionModal({ onSave, onClose }) {
 }
 
 Object.assign(window, {
-  MissionSidebar, NewMissionModal, makeSeedData,
+  MissionSidebar, NewMissionModal,
   MISSION_STATUSES, STATUS_COLORS, PHASE_COLORS, missionColor,
 });
