@@ -685,12 +685,13 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [activeMissionId, setActiveMissionId] = React.useState(null);
   const [data, setData] = React.useState(null);
+  const [authLoading, setAuthLoading] = React.useState(
+    () => !!localStorage.getItem('gantt_was_signed_in')
+  );
   const [syncStatus, setSyncStatus] = React.useState('offline'); // offline | syncing | synced
   const [calendarEvents, setCalendarEvents] = React.useState([]);
   const [calSyncing, setCalSyncing] = React.useState(false);
   const { toasts, toast } = useToasts();
-
-  // Load config from localStorage
   // Hardcoded credentials — do not expose settings UI to users
   const CLIENT_ID = '732243213522-mchnbdj1r8ofnml8isaklrjqov94f3lu.apps.googleusercontent.com';
   const FOLDER_NAME = 'Gantt';
@@ -744,17 +745,18 @@ function App() {
           scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events',
           callback: async (resp) => {
             if (resp.error) {
-              // Silent re-auth failed quietly — user can click sign-in manually
-              if (resp.error === 'interaction_required' || resp.error === 'access_denied') return;
+              // Silent re-auth failed — show sign-in screen
+              if (resp.error === 'interaction_required' || resp.error === 'access_denied') {
+                setAuthLoading(false);
+                return;
+              }
+              setAuthLoading(false);
               toast('Auth error: ' + resp.error, 'error');
               return;
             }
+            localStorage.setItem('gantt_was_signed_in', '1');
+            setAuthLoading(false);
             setIsSignedIn(true);
-            // Store hint for next silent attempt
-            const hint = localStorage.getItem('gantt_user_hint');
-            if (!hint) {
-              // We'll get email from Drive userinfo after load
-            }
             // Schedule silent token refresh 55 min from now
             setTimeout(() => {
               if (window._tokenClient) window._tokenClient.requestAccessToken({ prompt: '' });
@@ -764,12 +766,11 @@ function App() {
           },
         });
 
-        // Attempt silent sign-in on page load (no popup shown)
-        const savedHint = localStorage.getItem('gantt_user_hint');
-        window._tokenClient.requestAccessToken({
-          prompt: '',
-          ...(savedHint ? { login_hint: savedHint } : {}),
-        });
+        // Attempt silent sign-in on page load if previously signed in
+        const wasPreviouslySigned = localStorage.getItem('gantt_was_signed_in');
+        if (wasPreviouslySigned) {
+          window._tokenClient.requestAccessToken({ prompt: '' });
+        }
 
       } catch (e) {
         console.error('GAPI init error', e);
@@ -1083,6 +1084,17 @@ function App() {
   }, [tweaks.accentColor]);
 
   // ── Auth screen ─────────────────────────────────────────────────────────────
+  if (authLoading && !isSignedIn) {
+    return (
+      <div className="auth-screen">
+        <div style={{ textAlign: 'center', color: '#64748b', fontFamily: "'Space Mono', monospace", display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+          <div className="auth-logo">✈</div>
+          <div style={{ fontSize: 13 }}>Signing in…</div>
+        </div>
+      </div>
+    );
+  }
+
   if (!isSignedIn) {
     return (
       <div className="auth-screen">
@@ -1242,33 +1254,44 @@ function App() {
 
           {/* View content */}
           <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-            {view === 'dashboard' && (
-              <DashboardView missions={data.missions} calendarEvents={calendarEvents} />
-            )}
-            {view === 'gantt' && (
-              <GanttChart
-                mission={tweaks.showAllMissions ? null : activeMission}
-                allMissions={data.missions}
-                showAllMissions={tweaks.showAllMissions}
-                calendarEvents={calendarEvents}
-                onTaskUpdate={updateTask}
-                tweaks={tweaks}
-              />
-            )}
-            {view === 'resources' && (
-              <ResourcePanel
-                mission={activeMission}
-                onAddResource={addResource}
-                onDeleteResource={deleteResource}
-              />
-            )}
-            {view === 'calendar' && (
-              <CalendarView
-                missions={data.missions}
-                calendarEvents={calendarEvents}
-                onSyncToCalendar={syncMilestonesToCalendar}
-                syncing={calSyncing}
-              />
+            {data.missions.length === 0 ? (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, color: '#64748b' }}>
+                <div style={{ fontSize: 48 }}>✈</div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#1e293b', fontFamily: "'Space Mono', monospace" }}>No missions yet</div>
+                <div style={{ fontSize: 13 }}>Create your first mission to get started</div>
+                <button className="btn-primary" onClick={() => setShowAddMission(true)} style={{ fontSize: 13, padding: '10px 24px' }}>+ New Mission</button>
+              </div>
+            ) : (
+              <>
+                {view === 'dashboard' && (
+                  <DashboardView missions={data.missions} calendarEvents={calendarEvents} />
+                )}
+                {view === 'gantt' && (
+                  <GanttChart
+                    mission={tweaks.showAllMissions ? null : activeMission}
+                    allMissions={data.missions}
+                    showAllMissions={tweaks.showAllMissions}
+                    calendarEvents={calendarEvents}
+                    onTaskUpdate={updateTask}
+                    tweaks={tweaks}
+                  />
+                )}
+                {view === 'resources' && (
+                  <ResourcePanel
+                    mission={activeMission}
+                    onAddResource={addResource}
+                    onDeleteResource={deleteResource}
+                  />
+                )}
+                {view === 'calendar' && (
+                  <CalendarView
+                    missions={data.missions}
+                    calendarEvents={calendarEvents}
+                    onSyncToCalendar={syncMilestonesToCalendar}
+                    syncing={calSyncing}
+                  />
+                )}
+              </>
             )}
           </div>
         </div>
